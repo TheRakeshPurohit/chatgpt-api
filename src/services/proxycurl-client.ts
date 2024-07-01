@@ -1,3 +1,4 @@
+import type { Simplify } from 'type-fest'
 import defaultKy, { type KyInstance } from 'ky'
 import pThrottle from 'p-throttle'
 import { z } from 'zod'
@@ -52,8 +53,13 @@ export namespace proxycurl {
     typeof CompanyProfileEndpointParamsQueryClassSchema
   >
 
+  /**
+   * Requires one of:
+   * - `facebook_profile_url`
+   * - `linkedin_profile_url`
+   * - `twitter_profile_url`
+   */
   export const PersonProfileEndpointParamsQueryClassSchema = z.object({
-    // requires one of `facebook_profile_url`, `linkedin_profile_url`, or `twitter_profile_url`
     facebook_profile_url: z.string().optional(),
     linkedin_profile_url: z.string().optional(),
     twitter_profile_url: z.string().optional(),
@@ -68,8 +74,8 @@ export namespace proxycurl {
     fallback_to_cache: FallbackToCacheSchema,
     use_cache: UseCacheSchema
   })
-  export type PersonProfileEndpointParamsQueryClass = z.infer<
-    typeof PersonProfileEndpointParamsQueryClassSchema
+  export type PersonProfileEndpointParamsQueryClass = Simplify<
+    z.infer<typeof PersonProfileEndpointParamsQueryClassSchema>
   >
 
   export const PersonLookupEndpointParamsQueryClassSchema = z.object({
@@ -1929,6 +1935,7 @@ export namespace proxycurl {
   export type SearchResult = z.infer<typeof SearchResultSchema>
 
   export const ResultProfileSchema = z.object({
+    linkedin_url: z.string().optional(),
     acquisitions: PurpleAcquisitionSchema.optional(),
     affiliated_companies: z.array(PurpleAffiliatedCompanySchema).optional(),
     background_cover_image_url: z.string().optional(),
@@ -1957,7 +1964,12 @@ export namespace proxycurl {
     updates: z.array(PurpleCompanyUpdateSchema).optional(),
     website: z.string().optional()
   })
-  export type ResultProfile = z.infer<typeof ResultProfileSchema>
+  export type CompanyProfile = z.infer<typeof ResultProfileSchema>
+  export type ResolvedCompanyProfile = {
+    url: string
+    last_updated: string
+    profile: CompanyProfile
+  }
 
   export const CompanyUrlEnrichResultProfileSchema = z.object({
     acquisitions: FluffyAcquisitionSchema.optional(),
@@ -2040,11 +2052,13 @@ export class ProxycurlClient extends AIFunctionsProvider {
     apiBaseUrl = getEnv('PROXYCURL_API_BASE_URL') ??
       'https://nubela.co/proxycurl',
     throttle = true,
+    timeoutMs = 30_000,
     ky = defaultKy
   }: {
     apiKey?: string
     apiBaseUrl?: string
     throttle?: boolean
+    timeoutMs?: number
     ky?: KyInstance
   } = {}) {
     assert(
@@ -2064,6 +2078,7 @@ export class ProxycurlClient extends AIFunctionsProvider {
 
     this.ky = throttledKy.extend({
       prefixUrl: apiBaseUrl,
+      timeout: timeoutMs,
       headers: {
         Authorization: `Bearer ${apiKey}`
       }
@@ -2078,8 +2093,8 @@ export class ProxycurlClient extends AIFunctionsProvider {
   })
   async getLinkedInCompany(
     opts: proxycurl.CompanyProfileEndpointParamsQueryClass
-  ) {
-    return this.ky
+  ): Promise<proxycurl.CompanyProfile> {
+    const res = await this.ky
       .get('api/linkedin/company', {
         searchParams: sanitizeSearchParams({
           funding_data: 'include',
@@ -2088,7 +2103,12 @@ export class ProxycurlClient extends AIFunctionsProvider {
           ...opts
         })
       })
-      .json<proxycurl.ResultProfile>()
+      .json<proxycurl.CompanyProfile>()
+
+    return {
+      linkedin_url: opts.url,
+      ...res
+    }
   }
 
   @aiFunction({
@@ -2172,15 +2192,20 @@ export class ProxycurlClient extends AIFunctionsProvider {
   })
   async resolveLinkedInCompany(
     opts: proxycurl.CompanyLookupEndpointParamsQueryClass
-  ) {
-    return this.ky
+  ): Promise<proxycurl.CompanyProfile> {
+    const res = await this.ky
       .get('api/linkedin/company/resolve', {
         searchParams: sanitizeSearchParams({
           enrich_profile: 'enrich',
           ...opts
         })
       })
-      .json<proxycurl.ResultProfile>()
+      .json<proxycurl.ResolvedCompanyProfile>()
+
+    return {
+      linkedin_url: res.url,
+      ...res.profile
+    }
   }
 
   @aiFunction({
